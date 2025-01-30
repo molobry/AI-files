@@ -1,1 +1,104 @@
+import os
+import time
+from playwright.sync_api import sync_playwright
+from crewai import Agent, Task, Crew
+from fuzzywuzzy import fuzz
+from fuzzywuzzy.process import extractOne
+from openai import OpenAI
 
+# AI-based element detection helper
+def find_best_match(page, query, tag="input"):
+    elements = page.query_selector_all(tag)
+    matches = {el.get_attribute("name") or el.get_attribute("id") or el.inner_text(): el for el in elements if el}
+    best_match = extractOne(query, matches.keys(), scorer=fuzz.ratio)
+    return matches.get(best_match[0]) if best_match else None
+
+# OpenAI-based Natural Language Processing with Multi-step Planning
+def interpret_instruction(instruction, context=""):
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    response = client.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are an AI assistant that translates natural language test instructions into structured multi-step Python Playwright automation scripts."},
+            {"role": "user", "content": f"Context: {context}\nInstruction: {instruction}"}
+        ]
+    )
+    return response["choices"][0]["message"]["content"]
+
+# Playwright Navigation Agent with Multi-step Execution
+class BrowserAgent:
+    def __init__(self):
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(headless=False)
+        self.page = self.browser.new_page()
+        self.context_history = ""
+
+    def navigate(self, url):
+        self.page.goto(url)
+        self.context_history += f"Navigated to {url}. "
+        time.sleep(2)
+
+    def type_text(self, text, field):
+        element = find_best_match(self.page, field)
+        if element:
+            element.fill(text)
+            self.context_history += f"Entered '{text}' into {field}. "
+        else:
+            raise Exception(f"Field '{field}' not found!")
+        time.sleep(1)
+
+    def click_element(self, button):
+        element = find_best_match(self.page, button, tag="button") or self.page.get_by_text(button)
+        if element:
+            element.click()
+            self.context_history += f"Clicked {button}. "
+        else:
+            raise Exception(f"Button '{button}' not found!")
+        time.sleep(1)
+
+    def verify_text(self, text):
+        assert text in self.page.content(), f"'{text}' not found on page!"
+        self.context_history += f"Verified text '{text}' on page. "
+        time.sleep(1)
+
+    def execute_instruction(self, instruction):
+        actions = interpret_instruction(instruction, self.context_history)
+        for action in actions.split("\n"):
+            exec(action)
+            self.context_history += f"Executed step: {action}. "
+
+    def close(self):
+        self.browser.close()
+        self.playwright.stop()
+
+# CrewAI Integration with Multi-step Tasks
+browser_agent = Agent(
+    role="Web Navigator",
+    goal="Automate complex web interactions using Playwright",
+    backstory="An AI-powered automation assistant capable of executing structured, multi-step web-based test scripts using natural language with context awareness."
+)
+
+tasks = [
+    Task(description="Navigate to the webpage", agent=browser_agent),
+    Task(description="Fill in username and password", agent=browser_agent),
+    Task(description="Click login button", agent=browser_agent),
+    Task(description="Verify successful login", agent=browser_agent),
+    Task(description="Execute multi-step test scenarios", agent=browser_agent)
+]
+
+crew = Crew(agents=[browser_agent], tasks=tasks)
+
+if __name__ == "__main__":
+    browser = BrowserAgent()
+    crew.kickoff()
+    browser.navigate("https://example.com")
+    browser.type_text("admin", "Username")
+    browser.type_text("password123", "Password")
+    browser.click_element("Login")
+    browser.verify_text("Dashboard")
+    
+    # Example NLP multi-step instruction execution
+    instruction = "Search for 'Test Automation', click the first result, and verify 'Success' message."
+    browser.execute_instruction(instruction)
+    
+    browser.close()
